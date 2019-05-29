@@ -70,7 +70,8 @@ def read_data(path, file_name, extension, field, path_agro, file_name_agro, exte
     df = read_mni_data(path, file_name, extension, field)
 
     # Read agro-meteorological station
-    df_agro = read_agrometeo(path_agro, file_name_agro, extension_agro)
+    # df_agro = read_agrometeo(path_agro, file_name_agro, extension_agro)
+    df_agro = None
 
     # filter for field
     field_data = df.filter(like=field)
@@ -88,10 +89,28 @@ def read_data(path, file_name, extension, field, path_agro, file_name_agro, exte
     # theta_field[:] = 45
     sm_field = field_data.filter(like='SM')
     height_field = field_data.filter(like='Height')/100
+
     lai_field = field_data.filter(like='LAI')
+
+    lai_s2 = read_s2_data(path)
+    # Upsample to daily data
+    lai_s2 = lai_s2.resample('D').interpolate(method='linear')
+    # Overwrite field LAI with S2 LAI
+    lai_field = lai_s2.LAI.loc[pd.DatetimeIndex(lai_field.index.strftime('%Y-%m-%d'))]
+
     vwc_field = field_data.filter(like='VWC')
     pol_field = field_data.filter(like='sigma_sentinel_'+pol)
     return df, df_agro, field_data, field_data_orbit, theta_field, sm_field, height_field, lai_field, vwc_field, pol_field
+
+def read_s2_data(path):
+    #fname = os.path.join(path, 'LMU_LAI_DoY2017.txt')
+    fname = os.path.join(path, 'LMU_Kaska_params.txt')
+    s2_data = pd.read_csv(fname, names=['date', 'LAI', 'Cab', 'Cbrown'],
+            sep=',')
+    s2_data.date = pd.to_datetime('2017', format='%Y') + pd.to_timedelta(s2_data.date, unit='d')
+    s2_data = s2_data.set_index('date')
+
+    return s2_data
 
 ### Optimization ###
 #-----------------------------------------------------------------
@@ -146,7 +165,8 @@ def data_optimized_run(n, field_data, theta_field, sm_field, height_field, lai_f
 ### Data preparation ###
 #-----------------------------------------------------------------
 # storage information
-path = '/media/tweiss/Daten/new_data'
+# path = '/media/tweiss/Daten/new_data'
+path = '/home/glopez/Projects/Multiply/src/sense'
 file_name = 'multi_10_neu' # theta needs to be changed to for norm multi
 extension = '.csv'
 
@@ -158,6 +178,7 @@ field = '508_high'
 pol = 'vv'
 
 df, df_agro, field_data, field_data_orbit, theta_field, sm_field, height_field, lai_field, vwc_field, pol_field = read_data(path, file_name, extension, field, path_agro, file_name_agro, extension_agro)
+
 #-----------------------------------------------------------------
 
 ### Settings SenSe module ###
@@ -233,8 +254,8 @@ canopy = 'turbid_isotropic'
 
 models = {'surface': surface, 'canopy': canopy}
 
-opt_mod = 'time invariant'
-# opt_mod = 'time variant'
+#opt_mod = 'time invariant'
+opt_mod = 'time variant'
 
 surface_list = ['Oh92', 'Oh04', 'Dubois95', 'WaterCloud']
 canopy_list = ['turbid_isotropic', 'water_cloud']
@@ -256,6 +277,9 @@ for k in surface_list:
 
     for kk in canopy_list:
         df, df_agro, field_data, field_data_orbit, theta_field, sm_field, height_field, lai_field, vwc_field, pol_field = read_data(path, file_name, extension, field, path_agro, file_name_agro, extension_agro)
+
+        #cab = s2_data.Cab.loc[pd.DatetimeIndex(lai_field.index.strftime('%Y-%m-%d'))]
+
         clay = 0.08
         sand = 0.12
         bulk = 1.5
@@ -385,6 +409,7 @@ for k in surface_list:
                     aaa[j].append(res.x[j])
 
             field_data, theta_field, sm_field, height_field, lai_field, vwc_field, vv_field, vh_field, pol_field = data_optimized_run(n, field_data, theta_field, sm_field, height_field, lai_field, vwc_field, pol)
+
             V1 = lai_field.values.flatten()
             V2 = V1 # initialize in surface model
 
@@ -393,7 +418,11 @@ for k in surface_list:
         for i in range(len(res.x)):
             exec('%s = %s' % (var_opt[i],aaa[i]))
 
+        # Original ke
         ke = coef * np.sqrt(lai_field.values.flatten())
+
+        #from IPython import embed ; ipshell = embed()
+        ke = ke
         # ke = smooth(ke, 11)
 
         soil = Soil(mv=sm_field.values.flatten(), C_hh=np.array(C_hh), C_vv=np.array(C_vv), D_hh=np.array(D_hh), D_vv=np.array(D_vv), C_hv=np.array(C_hv), D_hv=np.array(D_hv), s=s, clay=clay, sand=sand, f=freq, bulk=bulk, l=l)
@@ -430,16 +459,41 @@ for k in surface_list:
 
 
         if kk == 'turbid_isotropic':
-
             ax.plot(date, 10*np.log10(S.__dict__['stot'][pol[::-1]]), color=colors, marker='s', linestyle='dashed', label=S.models['surface']+ ' + ' +  S.models['canopy'] + ' Pol: ' + pol + '; RMSE: ' + str(rmse)[0:4] + '; R2: ' + str(r_value)[0:4] + ' ' + str(r_value1)[0:4])
         else:
             ax.plot(date, 10*np.log10(S.__dict__['stot'][pol[::-1]]), color=colors, marker='s', label=S.models['surface']+ ' + ' +  S.models['canopy'] + ' Pol: ' + pol + '; RMSE: ' + str(rmse)[0:4] + '; R2: ' + str(r_value)[0:4] + ' ' + str(r_value1)[0:4])
 
         j = j+1
 ax.plot(10*np.log10(pol_field), 'ks-', label='Sentinel-1 Pol: ' + pol, linewidth=3)
+
 plt.legend()
+
+# Add height and soild moisture to plot
+#bx = ax.twinx()
+#bx.plot(date, height_field.values.flatten(), marker=',', linestyle='dashed', label='In-situ Height')
+#bx.plot(date, sm_field.values.flatten(), marker=',', linestyle='dashed', label='In-situ SM')
+#plt.legend()
+
+# Add LAI to plot
+cx = ax.twinx()
+cx.plot(date, lai_field.values.flatten(), marker=',', linestyle='dashed', color='green', label='In-situ LAI')
+
+s2 = read_s2_data(path)
+# Upsample to daily data
+s2 = s2.resample('D').interpolate(method='linear')
+# Overwrite field LAI with S2 LAI
+s2_lai = s2.LAI.loc[pd.DatetimeIndex(lai_field.index.strftime('%Y-%m-%d'))]
+s2_cab = s2.Cab.loc[pd.DatetimeIndex(lai_field.index.strftime('%Y-%m-%d'))]
+
+cx.plot(s2_lai.index.values.flatten(),
+        s2_lai.values.flatten(), marker=',', linestyle='-', color='green', label='S2 LAI')
+cx.plot(s2_cab.index.values.flatten(),
+        s2_cab.values.flatten() / 10., marker='+', linestyle='-', color='brown', label='S2 Cab / 10.')
+
+plt.legend(loc='lower right')
 plt.title('Winter Wheat 508')
-plt.savefig('/media/tweiss/Daten/plots/vv_'+opt_mod)
+
+plt.savefig('/home/glopez/Projects/Multiply/src/sense/plots/vv_'+opt_mod)
 pdb.set_trace()
 
 colors = ['gs-', 'rs-', ]
@@ -511,7 +565,8 @@ plt.legend()
 
 x = np.linspace(np.min(10*np.log10(pol_field.values.flatten()))-2, np.max(10*np.log10(pol_field.values.flatten()))+2, 16)
 plt.plot(x,x)
-plt.savefig('/media/tweiss/Daten/plots/scatterplot_'+field+'_'+pol+'_'+file_name+'_'+S.models['surface']+'_'+S.models['canopy'])
+#plt.savefig('/media/tweiss/Daten/plots/scatterplot_'+field+'_'+pol+'_'+file_name+'_'+S.models['surface']+'_'+S.models['canopy'])
+plt.savefig('/home/glopez/Projects/Multiply/src/sense/plots/scatterplot_'+field+'_'+pol+'_'+file_name+'_'+S.models['surface']+'_'+S.models['canopy'])
 plt.close()
 
 
@@ -625,7 +680,8 @@ slope1, intercept1, r_value1, p_value1, std_err1 = scipy.stats.linregress(10*np.
 rmse = rmse_prediction(10*np.log10(pol_field.values.flatten()), 10*np.log10(S.__dict__['stot'][pol[::-1]]))
 
 plt.title('Winter Wheat, R2 = ' + str(r_value) + ' RMSE = ' + str(rmse))
-plt.savefig('/media/tweiss/Daten/plots/plot_'+field+'_'+pol+'_'+file_name+'_'+S.models['surface']+'_'+S.models['canopy'])
+#plt.savefig('/media/tweiss/Daten/plots/plot_'+field+'_'+pol+'_'+file_name+'_'+S.models['surface']+'_'+S.models['canopy'])
+plt.savefig('/home/glopez/Projects/Multiply/src/sense/plots/plot_'+field+'_'+pol+'_'+file_name+'_'+S.models['surface']+'_'+S.models['canopy'])
 plt.close()
 
 
@@ -706,7 +762,7 @@ plt.plot(x,x)
 www = rmse_prediction(aaa, bbb)
 # slope, intercept, r_value, p_value, std_err = linregress(aaa[~np.isnan(bbb)], bbb[~np.isnan(bbb)])
 plt.title(pol+' ' + field + ' ' + surface + ' ' + canopy + 'R2='+str(r_value)+' RMSE='+str(www))
-plt.savefig('/media/tweiss/Daten/plots/scatterplot_fertig_'+field+'_'+pol+'_'+file_name+'_'+S.models['surface']+'_'+S.models['canopy'])
+plt.savefig('/home/glopez/Projects/Multiply/src/sense/plots/scatterplot_fertig_'+field+'_'+pol+'_'+file_name+'_'+S.models['surface']+'_'+S.models['canopy'])
 pdb.set_trace()
 
 
@@ -738,7 +794,8 @@ plt.xlabel('Backscatter Sentinel-1 [dB]')
 plt.ylabel('Backscatter predicted [dB]')
 plt.title('Winter Wheat 508, RMSE = 1.17, WCM WCM VH')
 plt.legend()
-plt.savefig('/media/tweiss/Daten/paper_plot/scatterplot_WCM_WCM_508_vh')
+#plt.savefig('/media/tweiss/Daten/paper_plot/scatterplot_WCM_WCM_508_vh')
+plt.savefig('/home/glopez/Projects/Multiply/src/sense/plots/scatterplot_WCM_WCM_508_vh')
 
 
 
